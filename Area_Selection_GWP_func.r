@@ -69,13 +69,13 @@ rasters_to_polygons <- function(filtered_rasters) {
   filtered_rasters |> lapply(as.polygons)
 }
 
-#' Merge, buffer, and smooth polygons
+#' Merge, buffer, smooth polygons, and create convex hulls
 #' @param polygons_list List of polygons
 #' @param crs Coordinate reference system string
 #' @param buffer_dist Buffer distance (default 500)
-#' @return Smoothed and projected vector object
-merge_and_smooth <- function(polygons_list, crs, buffer_dist = 500) {
-  polygons_list |>
+#' @return List containing smoothed vector object and convex hulls
+merge_smooth_and_hull <- function(polygons_list, crs, buffer_dist = 500) {
+  smoothed <- polygons_list |>
     vect() |>
     aggregate(dissolve = TRUE) |>
     fillHoles() |>
@@ -85,6 +85,14 @@ merge_and_smooth <- function(polygons_list, crs, buffer_dist = 500) {
     (\(x) smoothr::smooth(x, method = "ksmooth"))() |>
     project(crs) |>
     makeValid()
+  
+  convex_hulls <- polygons_list |> lapply(\(x) {
+    hull <- convHull(x)
+    hull_filled <- fillHoles(hull)
+    makeValid(hull_filled)
+  })
+  
+  list(smoothed = smoothed, convex_hulls = convex_hulls)
 }
 
 #' Write output shapefiles
@@ -94,13 +102,18 @@ merge_and_smooth <- function(polygons_list, crs, buffer_dist = 500) {
 #' @param lower Lower pixel threshold
 #' @param upper Upper pixel threshold
 write_outputs <- function(smooth_vector_proj, poly_gwp_areas, out_dir_vect, lower = 50, upper = 150) {
-  # Add lower and upper as attributes to the smooth vector
+  # Replace the smoothed vector with its convex hull
+  smooth_vector_proj <- convHull(smooth_vector_proj)
+  smooth_vector_proj <- makeValid(smooth_vector_proj)
+  
+  # Add lower and upper as attributes to the convex hull vector
   smooth_vector_proj$lower <- lower
   smooth_vector_proj$upper <- upper
-  out_name <- paste0(out_dir_vect, "AOI_Smooth", ".shp")
+  out_name <- paste0(out_dir_vect, "AOI_Smooth_", as.character(lower), "_", as.character(upper), ".shp")
   writeVector(smooth_vector_proj, out_name, overwrite = TRUE)
+  
   for (i in seq_along(poly_gwp_areas)) { 
-    out_name <- paste0(out_dir_vect, "AOI_", names(poly_gwp_areas)[i], ".shp")
+    out_name <- paste0(out_dir_vect, "PerYear/AOI_", names(poly_gwp_areas)[i], as.character(lower), "_", as.character(upper), ".shp")
     writeVector(poly_gwp_areas[[i]], out_name, overwrite = TRUE)
   }
 }
@@ -121,9 +134,9 @@ run_area_selection_gwp <- function(
   out_dir_vect,
   indices = 18:22,
   crs = "EPSG:4326",
-  lower = 50,
-  upper = 150,
-  neighbor_threshold = 15,
+  lower = 60,
+  upper = 199,
+  neighbor_threshold = 20,
   buffer_dist = 500
 ) {
   dir.create(out_dir_vect, showWarnings = FALSE, recursive = TRUE)
@@ -135,13 +148,13 @@ run_area_selection_gwp <- function(
   gwp_filtered <- apply_neighbor_filter(gwp_masks_clip, gwp_neighbors, neighbor_threshold)
   poly_gwp_areas <- gwp_filtered |> rasters_to_polygons()
   poly_gwp_areas_clip <- poly_gwp_areas |> clip_rasters(aral_delta)
-  smooth_vector_proj <- merge_and_smooth(poly_gwp_areas_clip, crs, buffer_dist)
-  write_outputs(smooth_vector_proj, poly_gwp_areas, out_dir_vect, lower = lower, upper = upper)
+  merged_results <- merge_smooth_and_hull(poly_gwp_areas_clip, crs, buffer_dist)
+  write_outputs(merged_results$smoothed, merged_results$convex_hulls, out_dir_vect, lower = lower, upper = upper)
 }
 
-# Example usage:
- run_area_selection_gwp(
-   gwp_folder = "D:/Coen/Projects/Aral_Sea/Data/GWP",
-   aral_delta_shp = "D:/Coen/Projects/Aral_Sea/Data/locations/Aral sea delta.shp",
-   out_dir_vect = "D:/Coen/Projects/Aral_Sea/Data/locations/GWP/Output_func/"
- )
+# Usage:
+run_area_selection_gwp(
+  gwp_folder = "G:/Coen/Projects/Aral_Sea/Data/GWP",
+  aral_delta_shp = "G:/Coen/Projects/Aral_Sea/Data/locations/Aral sea delta.shp",
+  out_dir_vect = "G:/Coen/Projects/Aral_Sea/Data/locations/GWP/Output_func/",
+)
